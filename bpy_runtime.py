@@ -27,22 +27,42 @@ def script_path(name):
     return os.path.join(SCRIPTS_DIR, name)
 
 
-async def run_subprocess(args):
+async def run_subprocess(args, stream_prefix=None):
     """Runs a subprocess without blocking the asyncio event loop.
 
     A synchronous subprocess.run() inside a node FUNCTION stalls ComfyUI's
     whole async executor for the child's lifetime; on Graydient that made
     finished jobs report timed_out with no error. Each child gets its own
     process group, killed afterwards so no orphaned Blender/ffmpeg children
-    keep the container looking busy."""
+    keep the container looking busy.
+
+    With stream_prefix, stdout is echoed line by line with a wall-clock stamp
+    as it arrives, so a job killed by the platform timeout still leaves
+    progress and timing in its log (Blender's per-frame "Saved:" lines are
+    dropped from the echo and the returned text)."""
     proc = await asyncio.create_subprocess_exec(
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
+        limit=1 << 20,
     )
+    out_lines = []
     try:
-        stdout, stderr = await proc.communicate()
+        stderr_task = asyncio.create_task(proc.stderr.read())
+        while True:
+            raw = await proc.stdout.readline()
+            if not raw:
+                break
+            line = raw.decode(errors="replace").rstrip("\n")
+            if "| Saved:" in line:
+                continue
+            out_lines.append(line)
+            if stream_prefix:
+                print(f"[{stream_prefix} {time.strftime('%H:%M:%S')}] {line}", flush=True)
+        stderr = await stderr_task
+        await proc.wait()
+        stdout = "\n".join(out_lines).encode()
     finally:
         sig = signal.SIGKILL if proc.returncode is None else signal.SIGTERM
         try:

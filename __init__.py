@@ -1,5 +1,6 @@
 from .nodes_audio import BpyScenesAudioAnalyze, BpyScenesResolveAudioPath
-from .nodes_bpy import BpyScenesMusicVisualizer, BpyScenesProceduralField, BpyScenesRenderTest
+from .nodes_bpy import (BpyScenesMusicVisualizer, BpyScenesProceduralField, BpyScenesRenderBench,
+                        BpyScenesRenderTest)
 
 NODE_CLASS_MAPPINGS = {
     "BpyScenesResolveAudioPath": BpyScenesResolveAudioPath,
@@ -7,6 +8,7 @@ NODE_CLASS_MAPPINGS = {
     "BpyScenesMusicVisualizer":  BpyScenesMusicVisualizer,
     "BpyScenesProceduralField":  BpyScenesProceduralField,
     "BpyScenesRenderTest":       BpyScenesRenderTest,
+    "BpyScenesRenderBench":      BpyScenesRenderBench,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -15,6 +17,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BpyScenesMusicVisualizer":  "BpyScenes: Music Visualizer (scene x look)",
     "BpyScenesProceduralField":  "BpyScenes: Procedural Field (demo render)",
     "BpyScenesRenderTest":       "BpyScenes: Render Test (timing diagnostic)",
+    "BpyScenesRenderBench":      "BpyScenes: Render Settings Benchmark",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]

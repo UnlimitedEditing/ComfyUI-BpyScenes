@@ -177,11 +177,54 @@ class BpyScenesMusicVisualizer:
                 "scene": scene, "look": look, "intensity": intensity,
             }, f)
 
-        rc, stdout, stderr = await run_subprocess([py_bin, script_path("music_visualizer.py"), cfg_path])
-        log("----- subprocess stdout -----")
-        log(stdout)
+        rc, stdout, stderr = await run_subprocess([py_bin, script_path("music_visualizer.py"), cfg_path],
+                                                  stream_prefix="music_visualizer")
+        log.lines.append(stdout)
         if rc != 0:
             log("----- subprocess stderr -----")
             log(stderr)
             raise RuntimeError(f"music_visualizer.py failed (rc={rc}):\n{stderr[-3000:]}")
+        return {"ui": {"text": [log.text()]}, "result": (InputImpl.VideoFromFile(out_path), log.text())}
+
+
+class BpyScenesRenderBench:
+    """Benchmarks visualizer render settings (EEVEE samples, shadows, PNG vs
+    JPEG frames, 720p vs 1080p) and encode paths on the actual job hardware.
+    Each result is streamed to the job log the moment it's measured, so a
+    timeout still keeps everything finished so far. Outputs a side-by-side
+    video: default settings (left) vs the fastest 1080p variant (right)."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "frames_per_variant": ("INT", {"default": 36, "min": 6, "max": 240}),
+        }}
+
+    RETURN_TYPES = ("VIDEO", "STRING")
+    RETURN_NAMES = ("comparison", "report")
+    FUNCTION     = "run"
+    CATEGORY     = "BpyScenes"
+    OUTPUT_NODE  = True
+
+    async def run(self, frames_per_variant):
+        import subprocess
+        from comfy_api.latest import InputImpl
+        log = _Report("BpyScenesRenderBench")
+        gpu = subprocess.run(["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"],
+                             capture_output=True, text=True).stdout.strip()
+        log(f"gpu: {gpu}")
+        py_bin = await ensure_bpy_python(log)
+
+        bench_dir = os.path.join(WORK_DIR, "bench")
+        out_path = os.path.join(WORK_DIR, "bench_comparison.mp4")
+        cfg_path = os.path.join(WORK_DIR, "bench.json")
+        with open(cfg_path, "w") as f:
+            json.dump({"work_dir": bench_dir, "frames": frames_per_variant, "variants": None, "out_path": out_path}, f)
+
+        rc, stdout, stderr = await run_subprocess([py_bin, script_path("bench.py"), cfg_path], stream_prefix="bench")
+        log.lines.append(stdout)
+        if rc != 0 or not os.path.isfile(out_path):
+            log("----- subprocess stderr -----")
+            log(stderr)
+            raise RuntimeError(f"bench.py failed (rc={rc}):\n{stderr[-3000:]}")
         return {"ui": {"text": [log.text()]}, "result": (InputImpl.VideoFromFile(out_path), log.text())}
