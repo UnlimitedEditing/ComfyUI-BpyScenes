@@ -120,12 +120,9 @@ class BpyScenesProceduralField:
 class BpyScenesMusicVisualizer:
     """Audio-reactive render. Scene and look presets are independent: any scene
     works with any look. Output covers the song from start_seconds to the end
-    (max_frames > 0 caps it). To fit render_budget_s (estimated from measured
-    per-frame costs) the node first renders fewer unique frames -- on twos,
-    threes -- keeping the full duration and fps, and only shortens the clip if
-    that would drop below MIN_UNIQUE_FPS."""
-
-    MIN_UNIQUE_FPS = 12
+    (max_frames > 0 caps it). If the estimated render time (from measured
+    per-frame costs) exceeds render_budget_s the clip is shortened with a
+    WARNING in the log -- frames are never skipped to save time."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -161,19 +158,16 @@ class BpyScenesMusicVisualizer:
         def cost(n, step):
             return len(range(0, n, step)) * pf_render + n * pf_mux
 
+        # Never skip frames to save time: held frames visibly miss audio events.
+        # If the budget can't cover the song, shorten -- loudly.
         step = base_step
-        while cost(frames, step) > budget_s and fps / (step + base_step) >= cls.MIN_UNIQUE_FPS:
-            step += base_step
-        if step != base_step:
-            log(f"render budget: rendering every {step} frames ({fps / step:.1f} unique fps, held to {fps} fps) "
-                f"to keep the full {frames / fps:.1f}s within render_budget_s={budget_s}")
         if cost(frames, step) > budget_s:
             fit = frames
             while fit > 1 and cost(fit, step) > budget_s:
                 fit -= max(1, fps // 4)
-            log(f"WARNING render budget: CLIP SHORTENED {frames / fps:.1f}s -> {fit / fps:.1f}s -- even at "
-                f"{fps / step:.1f} unique fps the est {cost(frames, step):.0f}s exceeds render_budget_s={budget_s}. "
-                f"Lower fps or quality to get the whole song.")
+            log(f"WARNING render budget: CLIP SHORTENED {frames / fps:.1f}s -> {fit / fps:.1f}s -- est "
+                f"{cost(frames, step):.0f}s exceeds render_budget_s={budget_s}. Lower fps or quality to get "
+                f"the whole song.")
             frames = fit
         log(f"song {duration:.1f}s: {frames} output frames ({frames / fps:.1f}s @ {fps} fps) from "
             f"{start_seconds:.1f}s, rendering {len(range(0, frames, step))} (frame_step {step}), "
