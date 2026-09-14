@@ -7,9 +7,9 @@ import urllib.request
 
 from .bpy_runtime import WORK_DIR, ensure_bpy_python, run_subprocess, script_path
 
-# Kept in sync with SCENES / LOOKS in bpy_scripts/music_visualizer.py.
-SCENES = ["ripple_field", "monolith_grid"]
-LOOKS = ["neon_night", "ember"]
+# Kept in sync with SCENES in bpy_scripts/scenes.py and LOOKS in bpy_scripts/looks.py.
+SCENES = ["ripple_field", "monolith_grid", "tunnel", "orbital_core", "spectrum_street", "helix"]
+LOOKS = ["neon_night", "ember", "ice", "acid", "mono_red", "sunset"]
 
 # (width, height, frame_step, render s per rendered frame, mux s per output frame).
 # Measured EEVEE on Graydient RTX 5090s: 720p 0.136s, 1080p ~0.21-0.26s, and

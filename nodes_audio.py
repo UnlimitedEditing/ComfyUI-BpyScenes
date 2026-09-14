@@ -128,6 +128,18 @@ def analyze_audio(path):
         if 0 < float(t) < duration
     })
 
+    # Band energies + onset strength let scenes give bass, mids and transients
+    # to different layers instead of everything following one broadband curve.
+    spec = np.abs(librosa.stft(y, n_fft=2048, hop_length=hop))
+    freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
+
+    def band(lo, hi):
+        b = np.sqrt((spec[(freqs >= lo) & (freqs < hi)] ** 2).mean(axis=0))
+        return (b / (float(b.max()) or 1.0)).round(3).tolist()
+
+    onset = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
+    onset = (onset / (float(onset.max()) or 1.0)).round(3).tolist()
+
     return {
         "duration": round(duration, 2),
         "bpm": round(float(np.asarray(tempo).item()), 1),
@@ -137,6 +149,13 @@ def analyze_audio(path):
         ],
         "beat_times": [round(float(t), 3) for t in beat_times],
         "section_times": section_times,
+        "bands": {
+            "hop_s": hop / sr,
+            "low": band(20, 150),
+            "mid": band(150, 2000),
+            "high": band(2000, 11000),
+            "onset": onset,
+        },
     }
 
 

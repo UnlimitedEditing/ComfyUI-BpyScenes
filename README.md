@@ -29,30 +29,47 @@ without one.
 
 ## Music visualizer presets
 
-Presets come in two independent vocabularies, so any scene works with any look:
+Presets come in two independent vocabularies, so any scene works with any look (36
+combinations):
 
-- **scene** covers geometry, motion, camera, and audio response: `ripple_field`,
-  `monolith_grid`
-- **look** covers palette, emission, lighting, and world: `neon_night`, `ember`
+| Scenes (`bpy_scripts/scenes.py`) | Looks (`bpy_scripts/looks.py`) |
+|---|---|
+| `ripple_field`: sphere field, bass ripples, beat ring pulses | `neon_night` |
+| `monolith_grid`: pillars fire on beats, slabs on the horizon | `ember` |
+| `tunnel`: flight through twisting hex rings | `ice` |
+| `orbital_core`: breathing core, wire cage, shard orbits | `acid` |
+| `spectrum_street`: towers replay recent audio toward a horizon sun | `mono_red` |
+| `helix`: rotating double helix with climbing beat pulses | `sunset` |
 
-Two contracts in `bpy_scripts/music_visualizer.py` keep them independent:
+- **Scene** covers geometry, motion, staging, camera, and audio response.
+- **Look** covers palette, accent colour, emission, key/rim lights, sky gradient, and
+  distance fade.
 
-- **signals**: the analysis JSON is turned into per-frame arrays (smoothed energy,
-  beat envelope, section index/progress) before rendering. Scenes only read those
-  arrays.
-- **drive**: each scene writes a 0–1 "excitement" value per element into
-  `obj.color[0]`. Looks read only that value (Object Info → Color → R).
+Composition comes from staging, not compositor effects. `bpy_scripts/kit.py` provides
+depth layers (floor grid, halo, dust shell) and a `CameraRig` with per-scene shot lists
+(lens, off-centre lens shift, roll). The rig hard-cuts at section changes, or on the next
+beat after about 7s without a cut.
+
+Three contracts keep scenes and looks independent:
+
+- **signals** (`signals.py`): the analysis JSON becomes per-frame arrays before
+  rendering: smoothed `energy`, `low`/`mid`/`high` bands, `onset`, beat envelope,
+  sections, and camera cuts. Scenes only read those arrays. Analysis without `bands` still
+  works (every band follows energy).
+- **drive**: each scene writes `obj.color[0]` (0–1 excitement) and `obj.color[1]`
+  (0 = palette, 1 = accent colour). Looks read only those two values.
+- **no colours in scenes**: scenes never set materials or colours.
 
 `quality` picks resolution and frame step (`720p_twos`, `1080p_twos`, `720p_full`). The
 node lowers the frame count so that estimated render + mux time fits `render_budget_s`.
 
 ### Adding a preset
 
-- **Look:** add an entry to `LOOKS` in the script and its name to `LOOKS` in
+- **Look:** add an entry to `LOOKS` in `looks.py` and its name to `LOOKS` in
   `nodes_bpy.py`.
-- **Scene:** add a class with `build(scn, mat, sig, intensity)` and `update(f)`, register
-  it in `SCENES`, and add its name to `SCENES` in `nodes_bpy.py`. Scenes must write
-  drive and must never set colours.
+- **Scene:** add a class with `build(scn, mat, sig, intensity)` and `update(f)` to
+  `scenes.py`, stage it with `kit.py`, register it in `SCENES`, and add its name to
+  `SCENES` in `nodes_bpy.py`.
 
 Scripts can be tested outside ComfyUI with any Python that has `bpy`:
 
