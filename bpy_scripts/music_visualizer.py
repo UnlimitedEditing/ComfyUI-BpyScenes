@@ -157,19 +157,24 @@ def main():
     t_render = time.time() - t0
     timer.detach()
 
-    t0 = time.time()
-    ext = image_ext(scn)
-    for i, f in enumerate(range(1, n + 1, step)):
-        os.rename(f"{frames_dir}/frame_{f:04d}.{ext}", f"{frames_dir}/seq_{i + 1:04d}.{ext}")
-    audio = cfg.get("audio_path")
-    extra_in, extra_out = [], []
-    if audio:
-        extra_in = ["-ss", f"{cfg['start_seconds']:.3f}", "-t", f"{n / fps:.3f}", "-i", audio]
-        extra_out = ["-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "192k"]
-    mux = encode_video(f"{frames_dir}/seq_%04d.{ext}", f"{fps}/{step}", cfg["out_path"], fps, n,
-                       out_size=cfg.get("output_size"), extra_inputs=extra_in, extra_output=extra_out,
-                       encoder=cfg.get("encoder", "libx264"))
-    t_mux = time.time() - t0
+    # frames_only: the ComfyUI node is already consuming frame_NNNN files as they
+    # appear (upscale + encode), so leave them in place and skip the mux.
+    frames_only = cfg.get("frames_only", False)
+    mux, t_mux = None, 0.0
+    if not frames_only:
+        t0 = time.time()
+        ext = image_ext(scn)
+        for i, f in enumerate(range(1, n + 1, step)):
+            os.rename(f"{frames_dir}/frame_{f:04d}.{ext}", f"{frames_dir}/seq_{i + 1:04d}.{ext}")
+        audio = cfg.get("audio_path")
+        extra_in, extra_out = [], []
+        if audio:
+            extra_in = ["-ss", f"{cfg['start_seconds']:.3f}", "-t", f"{n / fps:.3f}", "-i", audio]
+            extra_out = ["-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "192k"]
+        mux = encode_video(f"{frames_dir}/seq_%04d.{ext}", f"{fps}/{step}", cfg["out_path"], fps, n,
+                           out_size=cfg.get("output_size"), extra_inputs=extra_in, extra_output=extra_out,
+                           encoder=cfg.get("encoder", "libx264"))
+        t_mux = time.time() - t0
 
     log("===== BPY MUSIC VISUALIZER RESULTS =====")
     log(f"scene: {cfg['scene']}  look: {cfg['look']}  intensity: {cfg['intensity']}")
@@ -181,11 +186,12 @@ def main():
     log(f"setup_time_s: {t_setup:.2f}")
     log(f"render_time_s: {t_render:.2f}")
     log(f"frame_timing: {timer.summary()}")
-    log(f"mux_time_s: {t_mux:.2f}  mux_ok: {mux.returncode == 0}")
-    if mux.returncode != 0:
-        log(mux.stderr)
+    if mux is not None:
+        log(f"mux_time_s: {t_mux:.2f}  mux_ok: {mux.returncode == 0}")
+        if mux.returncode != 0:
+            log(mux.stderr)
     log(f"total_time_s: {time.time() - t_start:.2f}")
-    sys.exit(0 if mux.returncode == 0 else 3)
+    sys.exit(0 if mux is None or mux.returncode == 0 else 3)
 
 
 if __name__ == "__main__":

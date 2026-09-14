@@ -8,7 +8,8 @@ under a series of settings variants, printing one RESULT line per variant as
 soon as it finishes -- so if the job is killed by the platform timeout, every
 variant that completed is already in the log. Then times the encode paths
 (x264 at 1080p, lanczos 720p->1080p upscale, NVENC if present) and writes a
-side-by-side comparison video (baseline | fastest 1080p variant).
+side-by-side comparison video (baseline | fastest 1080p variant). Frames stay
+on disk as <work_dir>/<variant>/frame_NNNN.<ext> for the node's ESRGAN timing.
 """
 import json
 import math
@@ -26,8 +27,15 @@ FPS = 24
 
 # (name, scene, look, width, height, settings). Ordered by how much each answer
 # matters, so a timeout still leaves the important rows.
+PNG0 = {"image_format": "PNG", "png_compression": 0}
+
 VARIANTS = [
     ("base_1080_s64_shadow_png", "ripple_field", "neon_night", 1920, 1080, {}),
+    # render-low / ESRGAN path (the node upscales these frames afterwards)
+    ("360_s16_noshadow_png0",    "ripple_field", "neon_night", 640, 360,   {"samples": 16, "shadows": False, **PNG0}),
+    ("360_s8_noshadow_png0",     "ripple_field", "neon_night", 640, 360,   {"samples": 8, "shadows": False, **PNG0}),
+    ("mono_360_s16_noshadow_png0", "monolith_grid", "ember",   640, 360,   {"samples": 16, "shadows": False, **PNG0}),
+    ("helix_360_s16_noshadow_png0", "helix", "mono_red",       640, 360,   {"samples": 16, "shadows": False, **PNG0}),
     ("1080_s16_shadow_png",      "ripple_field", "neon_night", 1920, 1080, {"samples": 16}),
     ("1080_s8_noshadow_png",     "ripple_field", "neon_night", 1920, 1080, {"samples": 8, "shadows": False}),
     ("1080_s8_noshadow_jpg",     "ripple_field", "neon_night", 1920, 1080, {"samples": 8, "shadows": False, "image_format": "JPEG"}),

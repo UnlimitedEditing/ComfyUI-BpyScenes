@@ -26,6 +26,7 @@ without one.
 | `BpyScenesMusicVisualizer` | Analysis + audio → audio-reactive render with the song muxed in |
 | `BpyScenesProceduralField` | Self-contained ripple-field demo render (`frame_step=2` renders on twos) |
 | `BpyScenesRenderTest` | Timing diagnostic: renders a glTF sample and reports per-phase cost |
+| `BpyScenesRenderBench` | Benchmarks render settings, the ESRGAN upscale stage and encoders on the job's GPU |
 
 ## Music visualizer presets
 
@@ -60,8 +61,21 @@ Three contracts keep scenes and looks independent:
   (0 = palette, 1 = accent colour). Looks read only those two values.
 - **no colours in scenes**: scenes never set materials or colours.
 
-`quality` picks resolution and frame step (`720p_twos`, `1080p_twos`, `720p_full`). The
-node lowers the frame count so that estimated render + mux time fits `render_budget_s`.
+`quality` picks the render path:
+
+- `1080p_esrgan` (default) and `1440p_esrgan` render every frame at 640×360 with fast
+  EEVEE settings (16 samples, no shadows, uncompressed PNG). While Blender is still
+  rendering, the node upscales each frame on the GPU with Real-ESRGAN
+  `realesr-animevideov3` (2.5 MB, loaded via spandrel) and pipes it straight into
+  ffmpeg with the audio (NVENC when available, else x264). See `upscale.py`.
+  - Upscaling runs in fp16 and falls back to fp32 if it detects non-finite output.
+  - The model is expected in `models/upscale_models/` and downloaded on a cache miss.
+- `720p_full` renders natively with Blender defaults. `720p_twos` and `1080p_twos` hold
+  every other frame.
+
+Frames are never skipped to save time. If the estimated cost exceeds `render_budget_s`,
+the clip is shortened and the log says so (`WARNING render budget`). `max_frames` = 0
+renders the whole song from `start_seconds`.
 
 ### Adding a preset
 
