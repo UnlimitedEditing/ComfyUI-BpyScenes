@@ -119,9 +119,13 @@ class BpyScenesProceduralField:
 
 class BpyScenesMusicVisualizer:
     """Audio-reactive render. Scene and look presets are independent: any scene
-    works with any look. Output length follows the song from start_seconds,
-    capped by max_frames and then by render_budget_s (estimated from measured
-    per-frame costs) so a long song can't run the job out of time."""
+    works with any look. Output covers the song from start_seconds to the end
+    (max_frames > 0 caps it). To fit render_budget_s (estimated from measured
+    per-frame costs) the node first renders fewer unique frames -- on twos,
+    threes -- keeping the full duration and fps, and only shortens the clip if
+    that would drop below MIN_UNIQUE_FPS."""
+
+    MIN_UNIQUE_FPS = 12
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -133,7 +137,7 @@ class BpyScenesMusicVisualizer:
             "quality":         (list(QUALITY), {"default": "720p_twos"}),
             "intensity":       ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05}),
             "fps":             ("INT", {"default": 24, "min": 12, "max": 60}),
-            "max_frames":      ("INT", {"default": 1440, "min": 24, "max": 4320}),
+            "max_frames":      ("INT", {"default": 0, "min": 0, "max": 21600}),
             "start_seconds":   ("FLOAT", {"default": 0.0, "min": 0.0, "max": 3600.0, "step": 0.5}),
             "render_budget_s": ("INT", {"default": 150, "min": 10, "max": 1800}),
         }}
@@ -144,25 +148,47 @@ class BpyScenesMusicVisualizer:
     CATEGORY     = "BpyScenes"
     OUTPUT_NODE  = True
 
+    @classmethod
+    def plan_frames(cls, duration, start_seconds, fps, max_frames, base_step, pf_render, pf_mux, budget_s, log):
+        """Returns (output frames, frame_step)."""
+        frames = int(max(0.0, duration - start_seconds) * fps)
+        if frames < 1:
+            raise ValueError(f"start_seconds={start_seconds} is past the end of the song ({duration:.1f}s)")
+        if 0 < max_frames < frames:
+            log(f"max_frames={max_frames} caps the clip at {max_frames / fps:.1f}s of {frames / fps:.1f}s")
+            frames = max_frames
+
+        def cost(n, step):
+            return len(range(0, n, step)) * pf_render + n * pf_mux
+
+        step = base_step
+        while cost(frames, step) > budget_s and fps / (step + base_step) >= cls.MIN_UNIQUE_FPS:
+            step += base_step
+        if step != base_step:
+            log(f"render budget: rendering every {step} frames ({fps / step:.1f} unique fps, held to {fps} fps) "
+                f"to keep the full {frames / fps:.1f}s within render_budget_s={budget_s}")
+        if cost(frames, step) > budget_s:
+            fit = frames
+            while fit > 1 and cost(fit, step) > budget_s:
+                fit -= max(1, fps // 4)
+            log(f"WARNING render budget: CLIP SHORTENED {frames / fps:.1f}s -> {fit / fps:.1f}s -- even at "
+                f"{fps / step:.1f} unique fps the est {cost(frames, step):.0f}s exceeds render_budget_s={budget_s}. "
+                f"Lower fps or quality to get the whole song.")
+            frames = fit
+        log(f"song {duration:.1f}s: {frames} output frames ({frames / fps:.1f}s @ {fps} fps) from "
+            f"{start_seconds:.1f}s, rendering {len(range(0, frames, step))} (frame_step {step}), "
+            f"est {cost(frames, step):.0f}s")
+        return frames, step
+
     async def run(self, analysis_json, audio_path, scene, look, quality, intensity,
                   fps, max_frames, start_seconds, render_budget_s):
         from comfy_api.latest import InputImpl
         log = _Report("BpyScenesMusicVisualizer")
 
         analysis = json.loads(analysis_json)
-        width, height, step, pf_render, pf_mux = QUALITY[quality]
-        duration = float(analysis.get("duration") or 0.0)
-        frames = min(max_frames, int(max(0.0, duration - start_seconds) * fps))
-        if frames < 1:
-            raise ValueError(f"start_seconds={start_seconds} is past the end of the song ({duration:.1f}s)")
-        per_out = pf_render / step + pf_mux
-        budget_frames = int(render_budget_s / per_out)
-        if frames > budget_frames:
-            log(f"clamped {frames} -> {budget_frames} frames to fit render_budget_s={render_budget_s} "
-                f"(est {per_out:.3f}s per output frame at {quality})")
-            frames = budget_frames
-        log(f"song {duration:.1f}s, rendering {frames} frames ({frames / fps:.1f}s) from {start_seconds:.1f}s, "
-            f"est {frames * per_out:.0f}s")
+        width, height, base_step, pf_render, pf_mux = QUALITY[quality]
+        frames, step = self.plan_frames(float(analysis.get("duration") or 0.0), start_seconds, fps, max_frames,
+                                        base_step, pf_render, pf_mux, render_budget_s, log)
 
         py_bin = await ensure_bpy_python(log)
 

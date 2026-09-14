@@ -89,7 +89,8 @@ class Signals:
             self.low = self.mid = self.high = self.energy
             self.onset = None
 
-        beats = sorted(analysis.get("beat_times") or [])
+        duration = float(analysis.get("duration") or (self.t[-1] if self.t else 0.0))
+        beats = self._complete_beat_grid(sorted(analysis.get("beat_times") or []), duration)
         self.beat, self.beat_index, self.since_beat = [], [], []
         for t in self.t:
             i = bisect.bisect_right(beats, t) - 1
@@ -105,7 +106,6 @@ class Signals:
         if self.onset is None:
             self.onset = self.beat
 
-        duration = float(analysis.get("duration") or (self.t[-1] if self.t else 0.0))
         # librosa's agglomerative segmentation emits near-duplicate boundaries
         # (e.g. 18.62, 18.72) -- merge them or every section-driven move restarts
         # several times in a fraction of a second.
@@ -133,6 +133,38 @@ class Signals:
             prev_section, prev_beat = self.section[f], self.beat_index[f]
             self.cut.append(cut)
             self.since_cut.append(t - last_cut_t)
+
+    @staticmethod
+    def _complete_beat_grid(beats, duration):
+        """librosa's beat tracker often only locks on after a sparse intro (a live
+        30 s song at 129 bpm came back with 29 beats, all in the second half), which
+        leaves every beat-driven element dead until then. Extend the detected grid at
+        its median period back to 0, forward to the end, and through gaps."""
+        if len(beats) < 4:
+            return beats
+        diffs = sorted(b - a for a, b in zip(beats, beats[1:]))
+        period = diffs[len(diffs) // 2]
+        if period <= 0.2:
+            return beats
+        filled = []
+        t = beats[0]
+        while t - period >= 0.0:
+            t -= period
+        while t < beats[0] - period * 0.5:
+            filled.append(round(t, 3))
+            t += period
+        for a, b in zip(beats, beats[1:]):
+            filled.append(a)
+            gap = b - a
+            if gap > period * 1.75:
+                steps = round(gap / period)
+                filled.extend(round(a + gap * i / steps, 3) for i in range(1, steps))
+        filled.append(beats[-1])
+        t = beats[-1] + period
+        while t < duration:
+            filled.append(round(t, 3))
+            t += period
+        return filled
 
     def _level(self, raw, release_s, attack_s=None):
         """Normalise against the rendered window (so a quiet excerpt still gets
