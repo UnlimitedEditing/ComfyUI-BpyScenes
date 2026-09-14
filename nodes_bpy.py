@@ -25,13 +25,23 @@ LOOKS = ["neon_night", "ember", "ice", "acid", "mono_red", "sunset"]
 # Measured EEVEE on Graydient RTX 5090s with Blender defaults: 720p 0.136-0.142s,
 # 1080p ~0.21-0.26s. The esrgan tiers' costs are estimates until bench numbers
 # exist (360p render with 16 samples/no shadows, compact ESRGAN, NVENC/x264).
+_FAST = {"samples": 16, "shadows": False, "image_format": "PNG", "png_compression": 0}
+
 QUALITY = {
+    # 360p -> x4 (1440p) -> area-downscaled to 720p: supersampled, close to native.
+    "720p_esrgan":      {"render": (640, 360), "output": (1280, 720), "upscale": True, "step": 1,
+                         "pf_render": 0.045, "pf_post": 0.02, "settings": _FAST},
+    # 270p source: visibly softer thin lines, cheaper -- for longer songs.
+    "720p_esrgan_lite": {"render": (480, 270), "output": (1280, 720), "upscale": True, "step": 1,
+                         "pf_render": 0.035, "pf_post": 0.015, "settings": _FAST},
+    # Native 720p with the fast settings (JPEG frames, muxed after rendering).
+    "720p_fast":        {"render": (1280, 720), "step": 1, "pf_render": 0.07, "pf_post": 0.012,
+                         "settings": {"samples": 16, "shadows": False, "image_format": "JPEG"}},
     "1080p_esrgan": {"render": (640, 360), "output": (1920, 1080), "upscale": True, "step": 1,
                      "pf_render": 0.05, "pf_post": 0.03,
-                     "settings": {"samples": 16, "shadows": False, "image_format": "PNG", "png_compression": 0}},
+                     "settings": _FAST},
     "1440p_esrgan": {"render": (640, 360), "output": (2560, 1440), "upscale": True, "step": 1,
-                     "pf_render": 0.05, "pf_post": 0.045,
-                     "settings": {"samples": 16, "shadows": False, "image_format": "PNG", "png_compression": 0}},
+                     "pf_render": 0.05, "pf_post": 0.045, "settings": _FAST},
     "720p_full":    {"render": (1280, 720), "step": 1, "pf_render": 0.16, "pf_post": 0.012, "settings": {}},
     "720p_twos":    {"render": (1280, 720), "step": 2, "pf_render": 0.16, "pf_post": 0.012, "settings": {}},
     "1080p_twos":   {"render": (1920, 1080), "step": 2, "pf_render": 0.28, "pf_post": 0.027, "settings": {}},
@@ -148,12 +158,12 @@ class BpyScenesMusicVisualizer:
             "audio_path":      ("STRING", {"forceInput": True}),
             "scene":           (SCENES, {"default": SCENES[0]}),
             "look":            (LOOKS, {"default": LOOKS[0]}),
-            "quality":         (list(QUALITY), {"default": "1080p_esrgan"}),
+            "quality":         (list(QUALITY), {"default": "720p_esrgan"}),
             "intensity":       ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05}),
-            "fps":             ("INT", {"default": 24, "min": 12, "max": 60}),
+            "fps":             ("INT", {"default": 60, "min": 12, "max": 60}),
             "max_frames":      ("INT", {"default": 0, "min": 0, "max": 21600}),
             "start_seconds":   ("FLOAT", {"default": 0.0, "min": 0.0, "max": 3600.0, "step": 0.5}),
-            "render_budget_s": ("INT", {"default": 150, "min": 10, "max": 1800}),
+            "render_budget_s": ("INT", {"default": 250, "min": 10, "max": 1800}),
         }}
 
     RETURN_TYPES = ("VIDEO", "STRING")
@@ -235,8 +245,10 @@ class BpyScenesMusicVisualizer:
                 log("----- subprocess stderr -----")
                 log(stderr)
                 raise RuntimeError(f"music_visualizer.py failed (rc={rc}):\n{stderr[-3000:]}")
-        log(f"render+post wall time: {time.time() - t_job:.1f}s for {frames} frames "
-            f"({(time.time() - t_job) / frames:.4f}s per output frame)")
+        est = tier["pf_render"] / step + tier["pf_post"]
+        actual = (time.time() - t_job) / frames
+        log(f"COST {quality}: render+post wall {time.time() - t_job:.1f}s for {frames} frames = "
+            f"{actual:.4f}s per output frame (estimate {est:.4f}s, x{actual / est:.2f})")
         return {"ui": {"text": [log.text()]}, "result": (InputImpl.VideoFromFile(out_path), log.text())}
 
     @staticmethod
