@@ -28,6 +28,15 @@ LOOKS = ["neon_night", "ember", "ice", "acid", "mono_red", "sunset"]
 _FAST = {"samples": 16, "shadows": False, "image_format": "PNG", "png_compression": 0}
 
 QUALITY = {
+    # GL renderer (glviz/, moderngl on the NVIDIA EGL device). Probe on an RTX
+    # 4090: 2.1 ms per 720p frame all-in; 1080p estimated ~4 ms, ~6 ms with 2x
+    # supersampling. Estimates get replaced by the COST line from real runs.
+    "1080p60_gl":       {"renderer": "gl", "output": (1920, 1080), "supersample": 1, "step": 1,
+                         "pf_render": 0.0035, "pf_post": 0.0025, "settings": {}},
+    "1080p60_gl_ss2":   {"renderer": "gl", "output": (1920, 1080), "supersample": 2, "step": 1,
+                         "pf_render": 0.0065, "pf_post": 0.0025, "settings": {}},
+    "720p60_gl":        {"renderer": "gl", "output": (1280, 720), "supersample": 1, "step": 1,
+                         "pf_render": 0.0015, "pf_post": 0.0015, "settings": {}},
     # 360p -> x4 (1440p) -> area-downscaled to 720p: supersampled, close to native.
     "720p_esrgan":      {"render": (640, 360), "output": (1280, 720), "upscale": True, "step": 1,
                          "pf_render": 0.045, "pf_post": 0.02, "settings": _FAST},
@@ -158,7 +167,7 @@ class BpyScenesMusicVisualizer:
             "audio_path":      ("STRING", {"forceInput": True}),
             "scene":           (SCENES, {"default": SCENES[0]}),
             "look":            (LOOKS, {"default": LOOKS[0]}),
-            "quality":         (list(QUALITY), {"default": "720p_esrgan"}),
+            "quality":         (list(QUALITY), {"default": "1080p60_gl"}),
             "intensity":       ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05}),
             "fps":             ("INT", {"default": 60, "min": 12, "max": 60}),
             "max_frames":      ("INT", {"default": 0, "min": 0, "max": 21600}),
@@ -209,6 +218,9 @@ class BpyScenesMusicVisualizer:
 
         analysis = json.loads(analysis_json)
         tier = QUALITY[quality]
+        if tier.get("renderer") == "gl":
+            return await self._run_gl(analysis, audio_path, scene, look, quality, tier, intensity, fps, max_frames,
+                                      start_seconds, render_budget_s, log)
         width, height = tier["render"]
         frames, step = self.plan_frames(float(analysis.get("duration") or 0.0), start_seconds, fps, max_frames,
                                         tier, render_budget_s, log)
@@ -249,6 +261,45 @@ class BpyScenesMusicVisualizer:
         actual = (time.time() - t_job) / frames
         log(f"COST {quality}: render+post wall {time.time() - t_job:.1f}s for {frames} frames = "
             f"{actual:.4f}s per output frame (estimate {est:.4f}s, x{actual / est:.2f})")
+        return {"ui": {"text": [log.text()]}, "result": (InputImpl.VideoFromFile(out_path), log.text())}
+
+    async def _run_gl(self, analysis, audio_path, scene, look, quality, tier, intensity, fps, max_frames,
+                      start_seconds, render_budget_s, log):
+        import importlib.util
+        import subprocess
+        import sys
+
+        from comfy_api.latest import InputImpl
+
+        frames, _ = self.plan_frames(float(analysis.get("duration") or 0.0), start_seconds, fps, max_frames, tier,
+                                     render_budget_s, log)
+        if importlib.util.find_spec("moderngl") is None:
+            # Graydient has dropped pinned pip requirements without an error before.
+            t0 = time.time()
+            r = await asyncio.to_thread(subprocess.run, [sys.executable, "-m", "pip", "install", "--quiet", "moderngl"],
+                                        capture_output=True, text=True)
+            log(f"moderngl missing; pip install rc={r.returncode} in {time.time() - t0:.1f}s")
+        os.makedirs(WORK_DIR, exist_ok=True)
+        out_path = os.path.join(WORK_DIR, "music_visualizer_gl.mp4")
+        cfg_path = os.path.join(WORK_DIR, "music_visualizer_gl.json")
+        width, height = tier["output"]
+        with open(cfg_path, "w") as f:
+            json.dump({"analysis": analysis, "audio_path": audio_path, "out_path": out_path,
+                       "width": width, "height": height, "supersample": tier["supersample"], "fps": fps,
+                       "frame_count": frames, "start_seconds": start_seconds, "scene": scene, "look": look,
+                       "intensity": intensity}, f)
+        render_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), "glviz", "render.py")
+        t_job = time.time()
+        rc, stdout, stderr = await run_subprocess([sys.executable, render_py, cfg_path], stream_prefix="glviz")
+        log.lines.append(stdout)
+        if rc != 0 or not os.path.isfile(out_path):
+            log("----- subprocess stderr -----")
+            log(stderr)
+            raise RuntimeError(f"glviz/render.py failed (rc={rc}):\n{stderr[-3000:]}")
+        est = tier["pf_render"] + tier["pf_post"]
+        actual = (time.time() - t_job) / frames
+        log(f"COST {quality}: wall {time.time() - t_job:.1f}s for {frames} frames = {actual:.4f}s per output frame "
+            f"(estimate {est:.4f}s, x{actual / est:.2f})")
         return {"ui": {"text": [log.text()]}, "result": (InputImpl.VideoFromFile(out_path), log.text())}
 
     @staticmethod

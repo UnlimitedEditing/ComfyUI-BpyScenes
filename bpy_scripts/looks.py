@@ -12,52 +12,7 @@ import math
 
 import bpy
 
-# ramp        drive -> colour stops
-# accent      colour for accent=1 elements (scaled by drive)
-# strength    drive -> emission strength (low end near zero so calm elements
-#             read as lit surfaces)
-# horizon/zenith   world gradient
-# fog         (near, far, max) distance fade toward the horizon colour
-# key/rim     (energy, colour) sun from front-above and from behind
-LOOKS = {
-    "neon_night": {
-        "ramp": [(0.0, (0.01, 0.015, 0.2)), (0.5, (0.03, 0.25, 1.0)), (1.0, (1.0, 0.3, 0.04))],
-        "accent": (1.0, 0.04, 0.45), "strength": (0.03, 4.5),
-        "horizon": (0.0090, 0.0036, 0.0210), "zenith": (0.0, 0.0, 0.004),
-        "fog": (18.0, 90.0, 0.85), "key": (1.2, (0.7, 0.8, 1.0)), "rim": (3.0, (1.0, 0.25, 0.6)),
-    },
-    "ember": {
-        "ramp": [(0.0, (0.04, 0.008, 0.004)), (0.45, (0.6, 0.07, 0.01)), (1.0, (1.0, 0.8, 0.35))],
-        "accent": (0.08, 0.55, 0.7), "strength": (0.02, 5.0),
-        "horizon": (0.0270, 0.0075, 0.0018), "zenith": (0.002, 0.001, 0.001),
-        "fog": (15.0, 80.0, 0.9), "key": (1.5, (1.0, 0.75, 0.5)), "rim": (2.5, (1.0, 0.45, 0.1)),
-    },
-    "ice": {
-        "ramp": [(0.0, (0.01, 0.03, 0.08)), (0.5, (0.1, 0.6, 0.9)), (1.0, (0.9, 0.97, 1.0))],
-        "accent": (0.55, 0.3, 1.0), "strength": (0.02, 3.5),
-        "horizon": (0.0090, 0.0210, 0.0330), "zenith": (0.001, 0.003, 0.01),
-        "fog": (20.0, 100.0, 0.9), "key": (2.5, (0.85, 0.93, 1.0)), "rim": (2.0, (0.4, 0.8, 1.0)),
-    },
-    "acid": {
-        "ramp": [(0.0, (0.005, 0.03, 0.005)), (0.5, (0.25, 0.9, 0.05)), (1.0, (1.0, 1.0, 0.2))],
-        "accent": (1.0, 0.0, 0.55), "strength": (0.03, 4.0),
-        "horizon": (0.0045, 0.0120, 0.0015), "zenith": (0.0, 0.002, 0.0),
-        "fog": (15.0, 80.0, 0.85), "key": (1.0, (0.9, 1.0, 0.8)), "rim": (3.0, (0.6, 1.0, 0.1)),
-    },
-    "mono_red": {
-        "ramp": [(0.0, (0.01, 0.01, 0.01)), (0.6, (0.35, 0.35, 0.35)), (1.0, (1.0, 1.0, 1.0))],
-        "accent": (1.0, 0.02, 0.02), "strength": (0.0, 2.5),
-        "horizon": (0.0120, 0.0120, 0.0135), "zenith": (0.002, 0.002, 0.002),
-        "fog": (20.0, 100.0, 0.9), "key": (3.0, (1.0, 1.0, 1.0)), "rim": (2.0, (1.0, 1.0, 1.0)),
-    },
-    "sunset": {
-        "ramp": [(0.0, (0.06, 0.01, 0.1)), (0.5, (0.9, 0.12, 0.4)), (1.0, (1.0, 0.75, 0.2))],
-        "accent": (0.0, 0.7, 1.0), "strength": (0.02, 4.0),
-        "horizon": (0.1600, 0.0360, 0.0520), "zenith": (0.015, 0.008, 0.06),
-        "fog": (15.0, 110.0, 0.95), "key": (1.8, (1.0, 0.6, 0.45)), "rim": (3.0, (1.0, 0.4, 0.2)),
-    },
-}
-
+from looks_data import LOOKS  # noqa: E402  (palette/lighting shared with the GL renderer)
 
 def _sock(sockets, identifier):
     return next(s for s in sockets if s.identifier == identifier)

@@ -17,6 +17,35 @@ with a system `ffmpeg`, because the `bpy` wheel ships without FFmpeg output.
 Requires Linux x86_64, `ffmpeg` on PATH, and an NVIDIA GPU. EEVEE falls back to CPU
 without one.
 
+## GL renderer (default for the music visualizer)
+
+`glviz/` renders the music visualizer with **moderngl** (OpenGL 3.3) on the NVIDIA GPU,
+headless via EGL. The NVIDIA glvnd EGL vendor is forced, because Graydient containers also
+ship Mesa, and some hosts expose an AMD iGPU as the default EGL device. Each frame is
+stepped on the song clock, rendered, read back, and piped into ffmpeg (NVENC) with the
+audio.
+
+- **Scenes** (`glviz/gl_scenes.py`): vectorised numpy ports of the Blender scenes (same
+  names, motion, shot lists), drawn as instanced batches.
+- **Looks** (`bpy_scripts/looks_data.py`): shared with the Blender renderer, plus a
+  per-look post block.
+- **Post chain** (`glviz/renderer.py`): 6-level bloom, light shafts from each scene's hero
+  point, depth of field focused on the camera target, chromatic aberration, ACES, grade,
+  vignette, and grain. `1080p60_gl_ss2` renders at 2x and downsamples on the GPU.
+
+Measured on an RTX 4090 in the render probe: 2.1 ms per 720p frame all-in. A 48 s song at
+1080p60 renders in 24.5 s on a GTX 1660 Ti. Every run logs a `COST` line (scene update /
+GPU / readback / encode per frame).
+
+Run standalone with ComfyUI's Python (needs `moderngl`, `numpy`, `ffmpeg`):
+
+```
+python glviz/render.py config.json
+```
+
+`BpyScenesRenderProbe` (`probe/`) compares moderngl, headless Chromium + three.js, and
+EEVEE on the job's GPU.
+
 ## Nodes
 
 | Node | Purpose |
@@ -26,6 +55,7 @@ without one.
 | `BpyScenesMusicVisualizer` | Analysis + audio → audio-reactive render with the song muxed in |
 | `BpyScenesProceduralField` | Self-contained ripple-field demo render (`frame_step=2` renders on twos) |
 | `BpyScenesRenderTest` | Timing diagnostic: renders a glTF sample and reports per-phase cost |
+| `BpyScenesRenderProbe` | Render-engine probe: moderngl vs Chromium + three.js vs EEVEE on the job's GPU |
 | `BpyScenesRenderBench` | Benchmarks render settings, the ESRGAN upscale stage and encoders on the job's GPU |
 
 ## Music visualizer presets

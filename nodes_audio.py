@@ -120,11 +120,16 @@ def analyze_audio(path):
     rms_max = float(rms.max()) or 1.0
     rms_times = librosa.frames_to_time(np.arange(len(rms)), sr=sr, hop_length=hop)
 
+    # The recurrence matrix is O(frames^2): a 5-minute song at hop 512 is ~13k
+    # frames (170M cells). Section boundaries only need ~0.2 s resolution, so
+    # segment on MFCCs averaged over 8 frames (~186 ms).
+    seg_hop = hop * 8
     mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13, hop_length=hop)
+    mfcc = librosa.util.sync(mfcc, np.arange(0, mfcc.shape[1], 8), aggregate=np.mean)
     rec = librosa.segment.recurrence_matrix(mfcc, mode="affinity", sym=True)
     seg_frames = librosa.segment.agglomerative(rec, k=min(8, rec.shape[0] - 1))
     section_times = sorted({
-        round(float(t), 2) for t in librosa.frames_to_time(seg_frames, sr=sr, hop_length=hop)
+        round(float(t), 2) for t in librosa.frames_to_time(seg_frames, sr=sr, hop_length=seg_hop)
         if 0 < float(t) < duration
     })
 
