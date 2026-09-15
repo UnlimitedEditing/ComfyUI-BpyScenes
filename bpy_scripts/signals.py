@@ -84,9 +84,10 @@ class Signals:
             self.mid = self._level(sample("mid"), self.RELEASE_S * 0.6)
             self.high = self._level(sample("high"), self.RELEASE_S * 0.4)
             self.onset = self._level(sample("onset"), self.ONSET_RELEASE_S, attack_s=0.0)
+            self.brightness = self._level(sample("centroid"), self.RELEASE_S) if "centroid" in bands else self.mid
         else:
             # Older analysis JSON without bands: every band follows broadband energy.
-            self.low = self.mid = self.high = self.energy
+            self.low = self.mid = self.high = self.brightness = self.energy
             self.onset = None
 
         duration = float(analysis.get("duration") or (self.t[-1] if self.t else 0.0))

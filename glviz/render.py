@@ -3,7 +3,8 @@
 Usage: python render.py <config.json>
 config keys: analysis, audio_path, out_path, width, height, supersample, fps,
              frame_count, start_seconds, scene, look, intensity, bitrate,
-             post_knobs {glow, exposure, light_rays, depth_of_field: 0-100}
+             post_knobs {glow, exposure, light_rays, depth_of_field: 0-100},
+             spec (resolved visualizer spec; replaces scene/look), knob_offsets
 
 Steps the song clock manually (t = f / fps), renders every frame on the GPU,
 reads it back and pipes it to ffmpeg (NVENC when available) with the audio.
@@ -25,6 +26,8 @@ from looks_data import LOOKS  # noqa: E402
 from renderer import Renderer  # noqa: E402
 from gl_scenes import SCENES  # noqa: E402
 from signals import Signals  # noqa: E402
+from spec_scene import SpecScene  # noqa: E402
+from vocab import LOOK_KNOBS, normalise  # noqa: E402
 
 
 def log(line):
@@ -61,12 +64,26 @@ def main():
 
     sig = Signals(cfg["analysis"], n, fps, cfg["start_seconds"])
     ctx = create_context(log)
-    r = Renderer(ctx, (ow * ss, oh * ss), (ow, oh), LOOKS[cfg["look"]], cfg.get("post_knobs"))
-    scene = SCENES[cfg["scene"]]()
+    if cfg.get("spec"):
+        # Spec-built visualizer: normalise again defensively (idempotent), take the
+        # look + knobs from the spec, then apply Tier 2 slot offsets on top.
+        spec = normalise(cfg["spec"], log=log)
+        knobs = {k: spec["look"][k] for k in LOOK_KNOBS}
+        for name, offset in (cfg.get("knob_offsets") or {}).items():
+            if name in knobs:
+                knobs[name] = min(max(knobs[name] + offset, 0), 100)
+        log("resolved spec: " + json.dumps(spec, separators=(",", ":")))
+        r = Renderer(ctx, (ow * ss, oh * ss), (ow, oh), LOOKS[spec["look"]["palette"]], knobs)
+        scene = SpecScene(spec, log)
+        label = "spec"
+    else:
+        r = Renderer(ctx, (ow * ss, oh * ss), (ow, oh), LOOKS[cfg["look"]], cfg.get("post_knobs"))
+        scene = SCENES[cfg["scene"]]()
+        label = f"{cfg['scene']} / {cfg['look']}"
     scene.build(r, sig, cfg["intensity"])
     enc = open_encoder(cfg, ow, oh, log)
     t_setup = time.time() - t_start
-    log(f"setup {t_setup:.2f}s: {cfg['scene']} / {cfg['look']}, render {ow * ss}x{oh * ss} -> output {ow}x{oh}, "
+    log(f"setup {t_setup:.2f}s: {label}, render {ow * ss}x{oh * ss} -> output {ow}x{oh}, "
         f"{n} frames @ {fps} fps ({n / fps:.1f}s)")
 
     t_update = t_gpu = t_read = t_write = 0.0

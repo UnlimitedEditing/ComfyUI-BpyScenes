@@ -142,6 +142,11 @@ def analyze_audio(path):
         b = np.sqrt((spec[(freqs >= lo) & (freqs < hi)] ** 2).mean(axis=0))
         return (b / (float(b.max()) or 1.0)).round(3).tolist()
 
+    # Spectral centroid (timbral brightness), log-scaled between 200 Hz and 8 kHz.
+    centroid = librosa.feature.spectral_centroid(S=spec, sr=sr)[0]
+    centroid = np.clip((np.log2(np.maximum(centroid, 1.0)) - np.log2(200.0)) / (np.log2(8000.0) - np.log2(200.0)), 0, 1)
+    centroid = centroid.round(3).tolist()
+
     onset = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
     onset = (onset / (float(onset.max()) or 1.0)).round(3).tolist()
 
@@ -160,6 +165,7 @@ def analyze_audio(path):
             "mid": band(150, 2000),
             "high": band(2000, 11000),
             "onset": onset,
+            "centroid": centroid,
         },
     }
 
