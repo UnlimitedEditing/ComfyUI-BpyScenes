@@ -50,22 +50,29 @@ layout(location = 0) out vec4 o_color; layout(location = 1) out vec4 o_depth;
 void main() {
     float drive = v_style.x;
     vec3 base = palette(drive, v_style.y);
-    vec3 n = normalize(gl_FrontFacing ? v_norm : -v_norm);
-    vec3 v = normalize(u_eye - v_world);
-    float dist = length(u_eye - v_world);
+    vec3 nn = gl_FrontFacing ? v_norm : -v_norm;
+    vec3 n = nn / max(length(nn), 1e-6);
+    vec3 to_eye = u_eye - v_world;
+    float dist = length(to_eye);
+    vec3 v = to_eye / max(dist, 1e-6);
+    // Keep pow() bases non-negative: with unit vectors dot() can land a hair
+    // above 1.0, and pow(negative, y) is NaN -- a single NaN pixel gets
+    // smeared by the bloom mip chain into a large black block on screen.
+    float ndv = clamp(dot(n, v), 0.0, 1.0);
     // Surfaces carry the form (key diffuse + specular + rim light); emission is
     // reserved for excited elements -- drive^2 -- so calm geometry reads as
     // lit solids instead of flat glowing slabs. Strengths are the Blender look
     // values scaled for this HDR + bloom + ACES pipeline.
     vec3 surf = mix(base, vec3(dot(base, vec3(0.333))), 0.35) + 0.04;
-    vec3 h = normalize(u_key_dir + v);
+    vec3 hk = u_key_dir + v;
+    vec3 h = hk / max(length(hk), 1e-6);
     vec3 lit = surf * (0.03 + max(dot(n, u_key_dir), 0.0) * u_key_col * 0.9);
-    lit += u_key_col * pow(max(dot(n, h), 0.0), 48.0) * 0.35;
+    lit += u_key_col * pow(clamp(dot(n, h), 0.0, 1.0), 48.0) * 0.35;
     lit += surf * max(dot(n, u_rim_dir), 0.0) * u_rim_col * 0.35;
-    lit += u_rim_col * pow(1.0 - max(dot(n, v), 0.0), 4.0) * 0.1 * (0.3 + drive);
+    lit += u_rim_col * pow(1.0 - ndv, 4.0) * 0.1 * (0.3 + drive);
     vec3 emit = base * mix(u_strength.x, u_strength.y, drive * drive) * 0.45;
     float fog = fog_amount(dist);
-    o_color = vec4(mix(lit + emit * (1.0 - 0.7 * fog), u_horizon, fog), 1.0);
+    o_color = vec4(min(mix(lit + emit * (1.0 - 0.7 * fog), u_horizon, fog), vec3(64.0)), 1.0);
     o_depth = vec4(dist, 0.0, 0.0, 1.0);
 }
 """
@@ -87,7 +94,7 @@ uniform vec3 u_eye; uniform float u_floor_step; uniform float u_floor_drive; uni
 in vec3 v_world; out vec4 o_color;
 void main() {
     vec2 g = v_world.xy / u_floor_step;
-    vec2 d = abs(fract(g - 0.5) - 0.5) / fwidth(g);
+    vec2 d = abs(fract(g - 0.5) - 0.5) / max(fwidth(g), vec2(1e-6));
     float line = 1.0 - clamp(min(d.x, d.y) / u_floor_width, 0.0, 1.0);
     float dist = length(u_eye - v_world);
     float fade = 1.0 - fog_amount(dist);
@@ -122,7 +129,11 @@ BRIGHT_FS = """
 #version 330
 uniform sampler2D src; uniform float threshold; in vec2 uv; out vec4 o;
 void main() {
-    vec3 c = texture(src, uv).rgb; float l = max(max(c.r, c.g), c.b);
+    vec3 c = texture(src, uv).rgb;
+    // Belt and braces: never let a non-finite pixel enter the bloom chain.
+    if (any(isnan(c)) || any(isinf(c))) c = vec3(0.0);
+    c = min(c, vec3(64.0));
+    float l = max(max(c.r, c.g), c.b);
     o = vec4(c * smoothstep(threshold * 0.6, threshold * 1.6, l), 1.0);
 }
 """
@@ -181,6 +192,8 @@ void main() {
     vec2 off = q * aberration;
     vec3 c = vec3(scene_at(uv + off).r, scene_at(uv).g, scene_at(uv - off).b);
     c += texture(bloom, uv).rgb * bloom_amount * 0.55 + texture(rays, uv).rgb * 0.7;
+    if (any(isnan(c)) || any(isinf(c))) c = texture(color, uv).rgb;
+    if (any(isnan(c)) || any(isinf(c))) c = vec3(0.0);
     c = aces(c * grade.z * 0.85);
     float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
     c = mix(vec3(l), c, grade.x);
