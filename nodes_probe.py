@@ -1,4 +1,5 @@
-"""Render-engine probe: headless OpenGL (moderngl) vs headless Chromium + three.js.
+"""Render-engine probe: headless OpenGL (moderngl) vs headless Chromium + three.js,
+plus which GPU Blender EEVEE actually renders on.
 
 Both render the same visualizer-like test scene with a full post chain (bloom,
 depth of field, film grain; the OpenGL one also light shafts) at the target
@@ -11,7 +12,7 @@ import os
 import subprocess
 import sys
 
-from .bpy_runtime import WORK_DIR, run_subprocess
+from .bpy_runtime import WORK_DIR, ensure_bpy_python, run_subprocess, script_path
 
 _PROBE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "probe")
 
@@ -29,6 +30,7 @@ class BpyScenesRenderProbe:
             "width":              ("INT", {"default": 1280, "min": 64, "max": 3840}),
             "height":             ("INT", {"default": 720, "min": 64, "max": 2160}),
             "fps":                ("INT", {"default": 60, "min": 1, "max": 120}),
+            "blender_frames":     ("INT", {"default": 60, "min": 0, "max": 2000}),
         }}
 
     RETURN_TYPES = ("VIDEO", "STRING")
@@ -37,7 +39,7 @@ class BpyScenesRenderProbe:
     CATEGORY     = "BpyScenes"
     OUTPUT_NODE  = True
 
-    async def run(self, gl_frames, web_render_frames, web_capture_frames, width, height, fps):
+    async def run(self, gl_frames, web_render_frames, web_capture_frames, width, height, fps, blender_frames):
         from comfy_api.latest import InputImpl
 
         os.makedirs(WORK_DIR, exist_ok=True)
@@ -71,6 +73,9 @@ class BpyScenesRenderProbe:
         if rc != 0:
             log(f"three.js probe failed rc={rc}: {err[-1500:]}")
 
+        if blender_frames > 0:
+            await self._blender_gpu(blender_frames, log, lines)
+
         have = [p for p in (gl_out, web_out) if os.path.isfile(p)]
         if not have:
             raise RuntimeError("neither probe produced a video; see PROBE_GL / PROBE_WEB lines in the log")
@@ -88,3 +93,28 @@ class BpyScenesRenderProbe:
                 result = cmp_path
         report = "\n".join(lines)
         return {"ui": {"text": [report]}, "result": (InputImpl.VideoFromFile(result), report)}
+
+    @staticmethod
+    async def _blender_gpu(frames, log, lines):
+        """EEVEE renders through EGL/OpenGL; on hosts with an AMD iGPU it may have
+        been using the iGPU all along. Render with the default EGL vendor, then
+        with the NVIDIA vendor forced, and compare renderer + per-frame cost."""
+        try:
+            py_bin = await ensure_bpy_python(log)
+        except Exception as e:  # noqa: BLE001
+            log(f"BLENDER_GPU skipped, bpy runtime unavailable: {e!r}")
+            return
+        work = os.path.join(WORK_DIR, "gpu_probe")
+        variants = [("default", None)]
+        nv = next((p for p in ("/usr/share/glvnd/egl_vendor.d/10_nvidia.json", "/etc/glvnd/egl_vendor.d/10_nvidia.json")
+                   if os.path.isfile(p)), None)
+        if nv:
+            variants.append(("nvidia", {"__EGL_VENDOR_LIBRARY_FILENAMES": nv}))
+        else:
+            log("BLENDER_GPU no NVIDIA EGL vendor file found; only the default is tested")
+        for name, env in variants:
+            rc, out, err = await run_subprocess([py_bin, script_path("gpu_probe.py"), work, str(frames)],
+                                                stream_prefix=f"blender_gpu_{name}", env=env)
+            lines.append(out)
+            if rc != 0:
+                log(f"BLENDER_GPU [{name}] failed rc={rc}: {err[-800:]}")

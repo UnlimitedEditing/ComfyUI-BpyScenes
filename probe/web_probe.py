@@ -7,13 +7,15 @@ and reports which WebGL renderer each one actually gets (a real GPU vs the
 SwiftShader CPU fallback). On the first GPU-backed config it renders the same
 test scene as gl_probe.py with three.js post-processing (UnrealBloom, Bokeh
 depth of field, Film grain, ACES output), stepping the clock manually, and
-measures rendering alone plus three ways of getting frames out:
-  base64     readPixels -> base64 string -> Playwright -> Python (naive)
-  fetch      readPixels -> binary POST to a local HTTP server -> ffmpeg
-  webcodecs  H.264 encoded inside the page; only compressed video leaves it
+measures rendering alone and WebCodecs capture (H.264 encoded inside the page;
+only compressed video leaves it). The base64-via-Playwright and binary-POST
+capture paths were measured on Graydient at 195 ms and 313 ms per frame and
+are no longer run.
+
+Launch configs are tried in two passes: first just to see which WebGL renderer
+each gets (NVIDIA preferred over an iGPU), then full timing on the best one.
 Prints PROBE_WEB lines as it goes.
 """
-import base64
 import os
 import subprocess
 import sys
@@ -173,23 +175,29 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
 
+def _first_file(paths):
+    return next((p for p in paths if os.path.isfile(p)), None)
+
+
+# Graydient hosts can expose an AMD iGPU (Mesa radeonsi) that EGL picks by
+# default -- a first live run got "AMD Ryzen 9 7950X ... radeonsi" instead of the
+# RTX 4090 -- so the NVIDIA EGL vendor / Vulkan ICD are forced via env first.
+_NV_EGL = _first_file(["/usr/share/glvnd/egl_vendor.d/10_nvidia.json", "/etc/glvnd/egl_vendor.d/10_nvidia.json"])
+_NV_ICD = _first_file(["/usr/share/vulkan/icd.d/nvidia_icd.json", "/etc/vulkan/icd.d/nvidia_icd.json"])
+_GL_EGL = ["--use-gl=angle", "--use-angle=gl-egl", "--ignore-gpu-blocklist", "--enable-gpu"]
+_VULKAN = ["--use-angle=vulkan", "--enable-features=Vulkan", "--ignore-gpu-blocklist", "--enable-gpu"]
+
 CONFIGS = [
-    ("chromium, ANGLE Vulkan", {"channel": "chromium"},
-     ["--use-angle=vulkan", "--enable-features=Vulkan", "--ignore-gpu-blocklist", "--enable-gpu"]),
-    ("chromium, ANGLE GL-EGL", {"channel": "chromium"},
-     ["--use-gl=angle", "--use-angle=gl-egl", "--ignore-gpu-blocklist", "--enable-gpu"]),
-    ("headless-shell, ANGLE Vulkan", {}, ["--use-angle=vulkan", "--enable-features=Vulkan", "--ignore-gpu-blocklist"]),
-    ("headless-shell, ANGLE GL-EGL", {}, ["--use-gl=angle", "--use-angle=gl-egl", "--ignore-gpu-blocklist"]),
-    ("chromium, defaults", {"channel": "chromium"}, []),
+    ("chromium, ANGLE GL-EGL, NVIDIA EGL vendor", {"channel": "chromium"}, _GL_EGL,
+     {"__EGL_VENDOR_LIBRARY_FILENAMES": _NV_EGL} if _NV_EGL else None),
+    ("chromium, ANGLE Vulkan, NVIDIA ICD", {"channel": "chromium"}, _VULKAN,
+     {"VK_ICD_FILENAMES": _NV_ICD} if _NV_ICD else None),
+    ("chromium, ANGLE GL-EGL", {"channel": "chromium"}, _GL_EGL, {}),
+    ("chromium, ANGLE Vulkan", {"channel": "chromium"}, _VULKAN, {}),
+    ("headless-shell, ANGLE GL-EGL, NVIDIA EGL vendor", {}, _GL_EGL[:3],
+     {"__EGL_VENDOR_LIBRARY_FILENAMES": _NV_EGL} if _NV_EGL else None),
+    ("chromium, defaults", {"channel": "chromium"}, [], {}),
 ]
-
-
-def _encoder_args():
-    probe = subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=size=320x240:rate=24:duration=0.2",
-                            "-c:v", "h264_nvenc", "-f", "null", "-"], capture_output=True)
-    if probe.returncode == 0:
-        return ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "19"]
-    return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"]
 
 
 def main():
@@ -208,92 +216,95 @@ def main():
     srv = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     url = f"http://127.0.0.1:{srv.server_address[1]}/"
-    enc = _encoder_args()
 
-    def raw_sink(path):
-        return subprocess.Popen(["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgba",
-                                 "-s", f"{width}x{height}", "-framerate", str(fps), "-i", "-", "-vf", "vflip",
-                                 *enc, "-pix_fmt", "yuv420p", path], stdin=subprocess.PIPE)
+    def open_page(p, label, opts, extra, env):
+        t0 = time.time()
+        launch_env = {**os.environ, **env} if env else None
+        try:
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox", *extra], timeout=45000, env=launch_env,
+                                        **opts)
+        except Exception as e:  # noqa: BLE001
+            log(f"[{label}] launch failed: {str(e).strip().splitlines()[0][:300]}")
+            return None
+        try:
+            page = browser.new_page(viewport={"width": width, "height": height})
+            console = []
+            page.on("console", lambda msg: console.append(f"{msg.type}: {msg.text}"[:200]))
+            page.goto(url)
+            page.wait_for_function("window.ready === true || window.error !== undefined", timeout=60000)
+            err = page.evaluate("window.error")
+            if err:
+                log(f"[{label}] page error: {err.splitlines()[0][:200]} console={console[-2:]}")
+                browser.close()
+                return None
+            gpu = page.evaluate("window.gpu")
+            log(f"[{label}] launched in {time.time() - t0:.1f}s, WebGL renderer={gpu!r}")
+            return browser, page, gpu
+        except Exception as e:  # noqa: BLE001
+            log(f"[{label}] failed: {str(e).strip().splitlines()[0][:300]}")
+            browser.close()
+            return None
+
+    def classify(gpu):
+        g = gpu.lower()
+        if any(s in g for s in ("swiftshader", "llvmpipe", "software", "subzero")):
+            return 0
+        return 2 if "nvidia" in g else 1
 
     with sync_playwright() as p:
-        for label, opts, extra in CONFIGS:
-            t0 = time.time()
-            try:
-                browser = p.chromium.launch(headless=True, args=["--no-sandbox", *extra], timeout=45000, **opts)
-            except Exception as e:  # noqa: BLE001
-                log(f"[{label}] launch failed: {str(e).strip().splitlines()[0][:300]}")
+        # Pass 1: which GPU does each launch config actually get?
+        best = None
+        for label, opts, extra, env in CONFIGS:
+            if env is None:
+                log(f"[{label}] skipped: NVIDIA vendor/ICD file not present in container")
                 continue
-            try:
-                page = browser.new_page(viewport={"width": width, "height": height})
-                console = []
-                page.on("console", lambda msg: console.append(f"{msg.type}: {msg.text}"[:200]))
-                page.goto(url)
-                page.wait_for_function("window.ready === true || window.error !== undefined", timeout=60000)
-                err = page.evaluate("window.error")
-                if err:
-                    log(f"[{label}] page error: {err[:400]} console={console[-3:]}")
-                    continue
-                gpu = page.evaluate("window.gpu")
-                software = any(s in gpu.lower() for s in ("swiftshader", "llvmpipe", "software", "subzero"))
-                log(f"[{label}] launched in {time.time() - t0:.1f}s, WebGL renderer={gpu!r} software={software}")
-                if software:
-                    continue
+            opened = open_page(p, label, opts, extra, env)
+            if not opened:
+                continue
+            browser, _, gpu = opened
+            rank = classify(gpu)
+            browser.close()
+            if best is None or rank > best[0]:
+                best = (rank, label, opts, extra, env, gpu)
+            if rank == 2:
+                break
+        if best is None or best[0] == 0:
+            log("no GPU-backed Chromium configuration worked")
+            return 2
+        rank, label, opts, extra, env, gpu = best
+        if rank == 1:
+            log(f"WARNING no NVIDIA WebGL renderer found; timing on {gpu!r}")
 
-                page.evaluate("renderOnly(0, 10)")  # warm-up: shader compile
-                ms = page.evaluate(f"renderOnly(10, {render_frames})")
-                log(f"[{label}] RESULT render-only (composer.render + 1px sync) {width}x{height}: "
-                    f"{ms:.2f}ms/frame = {1000 / ms:.1f} fps")
+        # Pass 2: full timing on the best config.
+        opened = open_page(p, label, opts, extra, env)
+        if not opened:
+            return 2
+        browser, page, gpu = opened
+        try:
+            page.evaluate("renderOnly(0, 10)")  # warm-up: shader compile
+            ms = page.evaluate(f"renderOnly(10, {render_frames})")
+            log(f"[{label}] RESULT render-only (composer.render + 1px sync) {width}x{height} on {gpu!r}: "
+                f"{ms:.2f}ms/frame = {1000 / ms:.1f} fps")
 
-                n = max(capture_frames, 1)
-                few = min(n, 20)
-                ff = raw_sink(out_path + ".base64.mp4")
-                t_cap = time.time()
-                for f in range(few):
-                    ff.stdin.write(base64.b64decode(page.evaluate(f"captureBase64({f})")))
-                ff.stdin.close()
-                ff.wait()
-                log(f"[{label}] RESULT capture base64 via Playwright: {(time.time() - t_cap) / few * 1000:.1f}ms/frame")
-
-                # Capped: locally this path measured ~450 ms/frame, so a full run could eat minutes.
-                n_fetch = min(n, 60)
-                _Sink.ffmpeg = raw_sink(out_path + ".fetch.mp4")
-                t_cap = time.time()
-                r = page.evaluate(f"captureFetch(0, {n_fetch})")
-                _Sink.ffmpeg.stdin.close()
-                rc_fetch = _Sink.ffmpeg.wait()
-                _Sink.ffmpeg = None
-                wall = time.time() - t_cap
-                log(f"[{label}] RESULT capture fetch-POST raw RGBA {width}x{height} {n_fetch} frames: "
-                    f"render+readPixels={r['render_read_ms']:.2f}ms post+ffmpeg={r['post_ms']:.2f}ms "
-                    f"wall={wall / n_fetch * 1000:.2f}ms/frame ({n_fetch / wall:.1f} fps) ffmpeg_rc={rc_fetch}")
-
-                t_cap = time.time()
-                r = page.evaluate(f"captureWebCodecs(0, {n})")
-                wall = time.time() - t_cap
-                chosen, rc = out_path + ".fetch.mp4", rc_fetch
-                if r.get("error") or not _Sink.h264:
-                    log(f"[{label}] RESULT capture WebCodecs: unavailable ({r.get('error') or r.get('err')})")
-                else:
-                    raw = out_path + ".h264"
-                    with open(raw, "wb") as fh:
-                        fh.write(_Sink.h264)
-                    mux = subprocess.run(["ffmpeg", "-y", "-v", "error", "-framerate", str(fps), "-i", raw,
-                                          "-c", "copy", out_path + ".webcodecs.mp4"], capture_output=True, text=True)
-                    log(f"[{label}] RESULT capture WebCodecs H.264 ({r.get('hw')}) {width}x{height} {n} frames: "
-                        f"render+encode={r['ms']:.2f}ms/frame upload={r['upload_ms']:.0f}ms for "
-                        f"{r['bytes'] / 1e6:.1f}MB wall={wall / n * 1000:.2f}ms/frame ({n / wall:.1f} fps) "
-                        f"mux_rc={mux.returncode} err={r.get('err')}")
-                    if mux.returncode == 0:
-                        chosen, rc = out_path + ".webcodecs.mp4", 0
-                if os.path.isfile(chosen):
-                    os.replace(chosen, out_path)
-                return 0 if rc == 0 else 3
-            except Exception as e:  # noqa: BLE001
-                log(f"[{label}] failed: {str(e).strip().splitlines()[0][:300]}")
-            finally:
-                browser.close()
-    log("no GPU-backed Chromium configuration worked")
-    return 2
+            n = max(capture_frames, 1)
+            t_cap = time.time()
+            r = page.evaluate(f"captureWebCodecs(0, {n})")
+            wall = time.time() - t_cap
+            if r.get("error") or not _Sink.h264:
+                log(f"[{label}] RESULT capture WebCodecs: unavailable ({r.get('error') or r.get('err')})")
+                return 3
+            raw = out_path + ".h264"
+            with open(raw, "wb") as fh:
+                fh.write(_Sink.h264)
+            mux = subprocess.run(["ffmpeg", "-y", "-v", "error", "-framerate", str(fps), "-i", raw,
+                                  "-c", "copy", out_path], capture_output=True, text=True)
+            log(f"[{label}] RESULT capture WebCodecs H.264 ({r.get('hw')}) {width}x{height} {n} frames: "
+                f"render+encode={r['ms']:.2f}ms/frame upload={r['upload_ms']:.0f}ms for "
+                f"{r['bytes'] / 1e6:.1f}MB wall={wall / n * 1000:.2f}ms/frame ({n / wall:.1f} fps, "
+                f"{n / fps / wall:.1f}x realtime) mux_rc={mux.returncode} err={r.get('err')}")
+            return 0 if mux.returncode == 0 else 3
+        finally:
+            browser.close()
 
 
 if __name__ == "__main__":

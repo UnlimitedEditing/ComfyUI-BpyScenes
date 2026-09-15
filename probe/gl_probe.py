@@ -25,21 +25,49 @@ def log(line):
     print(f"PROBE_GL {line}", flush=True)
 
 
+NVIDIA_EGL_VENDOR_FILES = ["/usr/share/glvnd/egl_vendor.d/10_nvidia.json", "/etc/glvnd/egl_vendor.d/10_nvidia.json",
+                            "/usr/local/share/glvnd/egl_vendor.d/10_nvidia.json"]
+
+
+def gpu_driver_diagnostics():
+    """What the container exposes. Graydient hosts can have an AMD iGPU (Mesa)
+    next to the NVIDIA card, and EGL/Vulkan may default to the iGPU."""
+    import glob
+    for pattern in ("/usr/share/glvnd/egl_vendor.d/*", "/etc/glvnd/egl_vendor.d/*", "/usr/share/vulkan/icd.d/*",
+                    "/etc/vulkan/icd.d/*", "/dev/dri/*"):
+        log(f"diag {pattern}: {sorted(glob.glob(pattern)) or 'none'}")
+    for lib in ("libEGL_nvidia.so.0", "libEGL_mesa.so.0", "libEGL.so.1", "libOpenGL.so.0", "libGLX_nvidia.so.0"):
+        found = subprocess.run(f"ldconfig -p | grep -F {lib}", shell=True, capture_output=True, text=True).stdout.strip()
+        log(f"diag {lib}: {'present' if found else 'missing'}")
+
+
+def ensure_moderngl():
+    try:
+        import moderngl  # noqa: F401
+        return
+    except ImportError:
+        pass
+    # Graydient dropped a pinned "moderngl==5.12.0" from the pip requirements
+    # without an error, so install it here if it's missing.
+    t0 = time.time()
+    r = subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "moderngl"], capture_output=True, text=True)
+    log(f"moderngl was missing; pip install rc={r.returncode} in {time.time() - t0:.1f}s"
+        + ("" if r.returncode == 0 else f" err={r.stderr[-300:]}"))
+
+
 def create_context():
+    """Tries each EGL device and prefers a renderer that reports NVIDIA; falls
+    back to any non-software renderer (e.g. an iGPU) so a result still exists."""
     import moderngl
-    attempts = []
-    if sys.platform.startswith("linux"):
-        for kw in ({"backend": "egl"},
-                   {"backend": "egl", "libgl": "libOpenGL.so.0"},
-                   {"backend": "egl", "libegl": "libEGL_nvidia.so.0"},
-                   {"backend": "egl", "libgl": "libOpenGL.so.0", "libegl": "libEGL_nvidia.so.0"}):
-            for device in (None, 0, 1):
-                args = dict(kw)
-                if device is not None:
-                    args["device_index"] = device
-                attempts.append(args)
-    attempts.append({})
-    last = None
+    if sys.platform.startswith("linux") and "__EGL_VENDOR_LIBRARY_FILENAMES" not in os.environ:
+        vendor = next((p for p in NVIDIA_EGL_VENDOR_FILES if os.path.isfile(p)), None)
+        if vendor:
+            # glvnd reads this when libEGL loads, i.e. at the first context below.
+            os.environ["__EGL_VENDOR_LIBRARY_FILENAMES"] = vendor
+            log(f"forcing NVIDIA EGL vendor: {vendor}")
+    attempts = [{"backend": "egl", "device_index": i} for i in range(6)] + [{"backend": "egl"}] \
+        if sys.platform.startswith("linux") else [{}]
+    candidates, last = [], None
     for args in attempts:
         try:
             ctx = moderngl.create_context(standalone=True, require=330, **args)
@@ -49,11 +77,22 @@ def create_context():
             continue
         renderer = ctx.info.get("GL_RENDERER", "?")
         software = any(s in renderer.lower() for s in ("llvmpipe", "softpipe", "swiftshader", "software"))
+        nvidia = "nvidia" in renderer.lower()
         log(f"context attempt {args} -> renderer={renderer!r} version={ctx.info.get('GL_VERSION')} "
-            f"software={software}")
-        if not software:
+            f"nvidia={nvidia} software={software}")
+        if nvidia:
+            for c, _, _ in candidates:
+                c.release()
             return ctx, args, renderer
-        ctx.release()
+        if software:
+            ctx.release()
+        else:
+            candidates.append((ctx, args, renderer))
+    if candidates:
+        for c, _, _ in candidates[1:]:
+            c.release()
+        log(f"WARNING no NVIDIA renderer found, using {candidates[0][2]!r}")
+        return candidates[0]
     raise RuntimeError(f"no GPU OpenGL context available (last error: {last})")
 
 
@@ -240,6 +279,9 @@ void main() {
 
 def main():
     out_path, frames, width, height, fps = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5])
+    if sys.platform.startswith("linux"):
+        gpu_driver_diagnostics()
+    ensure_moderngl()
     t0 = time.time()
     ctx, ctx_args, renderer = create_context()
     log(f"GPU context in {time.time() - t0:.2f}s via {ctx_args}: {renderer}")

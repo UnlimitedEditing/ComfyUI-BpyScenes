@@ -27,7 +27,7 @@ def script_path(name):
     return os.path.join(SCRIPTS_DIR, name)
 
 
-async def run_subprocess(args, stream_prefix=None):
+async def run_subprocess(args, stream_prefix=None, env=None):
     """Runs a subprocess without blocking the asyncio event loop.
 
     A synchronous subprocess.run() inside a node FUNCTION stalls ComfyUI's
@@ -46,6 +46,7 @@ async def run_subprocess(args, stream_prefix=None):
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
         limit=1 << 20,
+        env={**os.environ, **env} if env else None,
     )
     out_lines = []
     try:
