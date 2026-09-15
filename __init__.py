@@ -1,4 +1,5 @@
 from .nodes_audio import BpyScenesAudioAnalyze, BpyScenesResolveAudioPath
+from .nodes_probe import BpyScenesRenderProbe
 from .nodes_bpy import (BpyScenesMusicVisualizer, BpyScenesProceduralField, BpyScenesRenderBench,
                         BpyScenesRenderTest)
 
@@ -9,6 +10,7 @@ NODE_CLASS_MAPPINGS = {
     "BpyScenesProceduralField":  BpyScenesProceduralField,
     "BpyScenesRenderTest":       BpyScenesRenderTest,
     "BpyScenesRenderBench":      BpyScenesRenderBench,
+    "BpyScenesRenderProbe":      BpyScenesRenderProbe,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -18,6 +20,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BpyScenesProceduralField":  "BpyScenes: Procedural Field (demo render)",
     "BpyScenesRenderTest":       "BpyScenes: Render Test (timing diagnostic)",
     "BpyScenesRenderBench":      "BpyScenes: Render Settings Benchmark",
+    "BpyScenesRenderProbe":      "BpyScenes: Render Engine Probe (OpenGL vs three.js)",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
