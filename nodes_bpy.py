@@ -180,6 +180,10 @@ class BpyScenesMusicVisualizer:
             "exposure":        ("INT", {"default": 60, "min": 0, "max": 100}),
             "light_rays":      ("INT", {"default": 50, "min": 0, "max": 100}),
             "depth_of_field":  ("INT", {"default": 50, "min": 0, "max": 100}),
+            # Spec from BpyScenesSpecFromPrompt. When present it replaces scene/look,
+            # always renders on the GL path, and the four post knobs above act as
+            # offsets from their defaults on top of the spec's own look values.
+            "spec_json":       ("STRING", {"forceInput": True}),
         }}
 
     RETURN_TYPES = ("VIDEO", "STRING")
@@ -220,16 +224,22 @@ class BpyScenesMusicVisualizer:
 
     async def run(self, analysis_json, audio_path, scene, look, quality, intensity,
                   fps, max_frames, start_seconds, render_budget_s,
-                  glow=70, exposure=60, light_rays=50, depth_of_field=50):
+                  glow=70, exposure=60, light_rays=50, depth_of_field=50, spec_json=""):
         from comfy_api.latest import InputImpl
         log = _Report("BpyScenesMusicVisualizer")
 
         analysis = json.loads(analysis_json)
         tier = QUALITY[quality]
+        spec = None
+        if spec_json and spec_json.strip():
+            spec = json.loads(spec_json)
+            if tier.get("renderer") != "gl":
+                log(f"spec_json given: rendering on 1080p60_gl instead of Blender tier {quality}")
+                quality, tier = "1080p60_gl", QUALITY["1080p60_gl"]
         if tier.get("renderer") == "gl":
             knobs = {"glow": glow, "exposure": exposure, "light_rays": light_rays, "depth_of_field": depth_of_field}
             return await self._run_gl(analysis, audio_path, scene, look, quality, tier, intensity, fps, max_frames,
-                                      start_seconds, render_budget_s, log, knobs)
+                                      start_seconds, render_budget_s, log, knobs, spec)
         width, height = tier["render"]
         frames, step = self.plan_frames(float(analysis.get("duration") or 0.0), start_seconds, fps, max_frames,
                                         tier, render_budget_s, log)
@@ -273,7 +283,7 @@ class BpyScenesMusicVisualizer:
         return {"ui": {"text": [log.text()]}, "result": (InputImpl.VideoFromFile(out_path), log.text())}
 
     async def _run_gl(self, analysis, audio_path, scene, look, quality, tier, intensity, fps, max_frames,
-                      start_seconds, render_budget_s, log, knobs):
+                      start_seconds, render_budget_s, log, knobs, spec=None):
         import importlib.util
         import subprocess
         import sys
@@ -296,8 +306,9 @@ class BpyScenesMusicVisualizer:
             json.dump({"analysis": analysis, "audio_path": audio_path, "out_path": out_path,
                        "width": width, "height": height, "supersample": tier["supersample"], "fps": fps,
                        "frame_count": frames, "start_seconds": start_seconds, "scene": scene, "look": look,
-                       "intensity": intensity, "post_knobs": knobs}, f)
-        log(f"post knobs: {knobs}")
+                       "intensity": intensity, "post_knobs": knobs, "spec": spec,
+                       "knob_offsets": {k: v - d for (k, v), d in zip(knobs.items(), (70, 60, 50, 50))}}, f)
+        log(f"post knobs: {knobs}" + (" (applied as offsets on the spec's look)" if spec else ""))
         render_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), "glviz", "render.py")
         t_job = time.time()
         rc, stdout, stderr = await run_subprocess([sys.executable, render_py, cfg_path], stream_prefix="glviz")

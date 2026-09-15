@@ -19,7 +19,26 @@ from looks_data import LOOKS  # noqa: E402
 
 SPEC_VERSION = 1
 MAX_OBJECTS, MAX_BINDINGS, MAX_RELATIONSHIPS = 7, 12, 5
+MAX_MAIN_SUBJECTS = 3
 INSTANCE_BUDGET = 6000
+GROUNDED = {"particle_field", "pillar_grid", "tower_rows", "ring_tunnel"}
+
+# Mood words -> palette, used as a hint to the LLM when the palette is "auto".
+PALETTE_WORDS = {
+    "ice": ["ice", "icy", "frozen", "cold", "arctic", "glacier", "winter", "frost", "crystal", "cool blue"],
+    "ember": ["fire", "ember", "lava", "magma", "flame", "burning", "warm", "amber", "heat", "volcanic"],
+    "sunset": ["sunset", "synthwave", "outrun", "retro", "dusk", "pink", "miami", "vaporwave"],
+    "neon_night": ["neon", "cyberpunk", "night", "club", "blade runner", "tokyo", "electric blue"],
+    "acid": ["acid", "toxic", "rave", "psychedelic", "slime", "lime", "radioactive", "green"],
+    "mono_red": ["monochrome", "black and white", "noir", "minimal", "brutalist", "red and black", "stark"],
+}
+
+
+def palette_hint(text):
+    t = (text or "").lower()
+    scores = {p: sum(1 for w in words if w in t) for p, words in PALETTE_WORDS.items()}
+    best = max(scores, key=scores.get)
+    return best if scores[best] > 0 else None
 
 # ── nouns ────────────────────────────────────────────────────────────────────
 # channels: what audio may drive (each 0-1 internally, mapped to tuned ranges).
@@ -413,6 +432,23 @@ def normalise(raw, log=print, _allow_snap=True):
             if s and (o["type"] == s or o["id"].startswith(s) or s.startswith(o["id"])):
                 return o["id"]
         return None
+
+    # rules: ground/axis objects can't float above or beside the scene
+    for o in objects:
+        if o["type"] in GROUNDED and o["placement"] not in ("center", "below"):
+            note(f"{o['id']} ({o['type']}) placement {o['placement']} -> center (it's a ground-level object)")
+            o["placement"] = "center"
+
+    # rules: too many main subjects reads as clutter; keep the camera focus first
+    cam_focus = ref((raw.get("camera") or {}).get("focus")) if isinstance(raw.get("camera"), dict) else None
+    mains_all = [o for o in objects if OBJECTS[o["type"]]["group"] in ("main", "orbit")]
+    if len(mains_all) > MAX_MAIN_SUBJECTS:
+        keep = sorted(mains_all, key=lambda o: o["id"] != cam_focus)[:MAX_MAIN_SUBJECTS]
+        for o in mains_all:
+            if o not in keep:
+                objects.remove(o)
+                ids.discard(o["id"])
+                note(f"dropped {o['id']} ({o['type']}): more than {MAX_MAIN_SUBJECTS} main subjects")
 
     # rules: fpv needs a flight path; two flight-path objects conflict
     flight = [o for o in objects if o["type"] in ("ring_tunnel", "tower_rows")]
