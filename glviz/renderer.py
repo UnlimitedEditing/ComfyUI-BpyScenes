@@ -44,6 +44,7 @@ float fog_amount(float dist) { return clamp((dist - u_fog.x) / (u_fog.y - u_fog.
 SCENE_FS = """
 #version 330
 uniform vec3 u_eye; uniform vec3 u_key_dir; uniform vec3 u_key_col; uniform vec3 u_rim_dir; uniform vec3 u_rim_col;
+uniform float u_emit_gain;
 """ + LOOK_GLSL + """
 in vec3 v_world; in vec3 v_norm; in vec2 v_style;
 layout(location = 0) out vec4 o_color; layout(location = 1) out vec4 o_depth;
@@ -70,7 +71,7 @@ void main() {
     lit += u_key_col * pow(clamp(dot(n, h), 0.0, 1.0), 48.0) * 0.35;
     lit += surf * max(dot(n, u_rim_dir), 0.0) * u_rim_col * 0.35;
     lit += u_rim_col * pow(1.0 - ndv, 4.0) * 0.1 * (0.3 + drive);
-    vec3 emit = base * mix(u_strength.x, u_strength.y, drive * drive) * 0.45;
+    vec3 emit = base * mix(u_strength.x, u_strength.y, drive * drive) * u_emit_gain;
     float fog = fog_amount(dist);
     o_color = vec4(min(mix(lit + emit * (1.0 - 0.7 * fog), u_horizon, fog), vec3(64.0)), 1.0);
     o_depth = vec4(dist, 0.0, 0.0, 1.0);
@@ -175,7 +176,7 @@ COMPOSITE_FS = """
 #version 330
 uniform sampler2D color; uniform sampler2D depth; uniform sampler2D blur_half; uniform sampler2D blur_quarter;
 uniform sampler2D bloom; uniform sampler2D rays;
-uniform float focus; uniform float dof; uniform float bloom_amount; uniform float aberration;
+uniform float focus; uniform float dof; uniform float bloom_amount; uniform float aberration; uniform float exposure;
 uniform float grain; uniform float vignette; uniform vec3 grade; uniform float frame;
 in vec2 uv; out vec4 o;
 vec3 aces(vec3 x) { return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
@@ -191,10 +192,10 @@ void main() {
     vec2 q = uv - 0.5;
     vec2 off = q * aberration;
     vec3 c = vec3(scene_at(uv + off).r, scene_at(uv).g, scene_at(uv - off).b);
-    c += texture(bloom, uv).rgb * bloom_amount * 0.55 + texture(rays, uv).rgb * 0.7;
+    c += texture(bloom, uv).rgb * bloom_amount + texture(rays, uv).rgb;
     if (any(isnan(c)) || any(isinf(c))) c = texture(color, uv).rgb;
     if (any(isnan(c)) || any(isinf(c))) c = vec3(0.0);
-    c = aces(c * grade.z * 0.85);
+    c = aces(c * grade.z * exposure);
     float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
     c = mix(vec3(l), c, grade.x);
     c = clamp((c - 0.5) * grade.y + 0.5, 0.0, 1.0);
@@ -205,8 +206,41 @@ void main() {
 """
 
 
+# ── user-facing post knobs ───────────────────────────────────────────────────
+# Constrain-by-construction: every knob is 0-100 in the UI and maps through a
+# curve onto an internal range tuned to look acceptable at both ends, so a bad
+# value can't be expressed at all. 50 is the look's tuned baseline; defaults
+# (in the node) sit a little brighter than that.
+
+def _smooth(x):
+    """S-curve on 0-1: gentle near both ends, responsive in the middle."""
+    return x * x * (3.0 - 2.0 * x)
+
+
+def _lerp(a, b, t):
+    return a + (b - a) * t
+
+
+def post_knob_values(knobs):
+    """knobs: {"glow", "exposure", "light_rays", "depth_of_field"} each 0-100.
+    Returns internal multipliers."""
+    def k(name, default=50.0):
+        return min(max(float(knobs.get(name, default)), 0.0), 100.0) / 100.0
+
+    glow = _smooth(k("glow"))
+    return {
+        # glow drives emission and bloom together so they stay balanced:
+        # 0 -> matte, lit solids; 100 -> hot neon (the early blown-out look is ~85)
+        "emit": _lerp(0.2, 1.1, glow),
+        "bloom": _lerp(0.15, 1.3, glow),
+        "exposure": _lerp(0.55, 1.45, _smooth(k("exposure"))),
+        "rays": _lerp(0.0, 1.6, k("light_rays")),
+        "dof": _lerp(0.0, 2.0, k("depth_of_field")),
+    }
+
+
 class Renderer:
-    def __init__(self, ctx, render_size, output_size, look):
+    def __init__(self, ctx, render_size, output_size, look, knobs=None):
         self.ctx, self.look = ctx, look
         self.rw, self.rh = render_size
         self.ow, self.oh = output_size
@@ -259,6 +293,7 @@ class Renderer:
         self.rays_fbo = ctx.framebuffer([self.rays_t])
         self.out_t = ctx.texture((self.ow, self.oh), 3, dtype="f1")
         self.out_fbo = ctx.framebuffer([self.out_t])
+        self.knobs = post_knob_values(knobs or {})
         self._set_look_uniforms()
 
     def batch(self, mesh, count):
@@ -368,7 +403,7 @@ class Renderer:
         self.bright_t.use(0)
         self.rays_p["src"].value = 0
         self.rays_p["light_uv"].value = (float(luv[0]), float(luv[1]))
-        self.rays_p["amount"].value = amount
+        self.rays_p["amount"].value = amount * self.knobs["rays"]
         self._full("rays", self.rays_fbo)
 
         # composite at output size
@@ -379,8 +414,10 @@ class Renderer:
         for name, unit in (("color", 0), ("depth", 1), ("blur_half", 2), ("blur_quarter", 3), ("bloom", 4), ("rays", 5)):
             cp[name].value = unit
         cp["focus"].value = focus
-        cp["dof"].value = post["dof"] * (cam["lens"] / 35.0) * 1.6
-        cp["bloom_amount"].value = post["bloom"][0]
+        cp["dof"].value = post["dof"] * (cam["lens"] / 35.0) * 1.6 * self.knobs["dof"]
+        cp["bloom_amount"].value = post["bloom"][0] * self.knobs["bloom"]
+        cp["exposure"].value = self.knobs["exposure"]
+        self.scene_p["u_emit_gain"].value = self.knobs["emit"]
         cp["aberration"].value = post["aberration"]
         cp["grain"].value = post["grain"]
         cp["vignette"].value = post["vignette"]

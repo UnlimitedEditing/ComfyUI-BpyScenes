@@ -2,7 +2,8 @@
 
 Usage: python render.py <config.json>
 config keys: analysis, audio_path, out_path, width, height, supersample, fps,
-             frame_count, start_seconds, scene, look, intensity, bitrate
+             frame_count, start_seconds, scene, look, intensity, bitrate,
+             post_knobs {glow, exposure, light_rays, depth_of_field: 0-100}
 
 Steps the song clock manually (t = f / fps), renders every frame on the GPU,
 reads it back and pipes it to ffmpeg (NVENC when available) with the audio.
@@ -60,7 +61,7 @@ def main():
 
     sig = Signals(cfg["analysis"], n, fps, cfg["start_seconds"])
     ctx = create_context(log)
-    r = Renderer(ctx, (ow * ss, oh * ss), (ow, oh), LOOKS[cfg["look"]])
+    r = Renderer(ctx, (ow * ss, oh * ss), (ow, oh), LOOKS[cfg["look"]], cfg.get("post_knobs"))
     scene = SCENES[cfg["scene"]]()
     scene.build(r, sig, cfg["intensity"])
     enc = open_encoder(cfg, ow, oh, log)
